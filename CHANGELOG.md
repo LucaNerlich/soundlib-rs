@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0] - 2026-06-11
+
+### Added
+
+- Keys sidebar listing navigation, playback, and app hotkeys (switches to filter hints in filter mode)
+- `z` hotkey to toggle shuffle and `R` to cycle repeat mode via cliamp
+- Automatic cliamp daemon shutdown on quit when soundlib started the daemon; externally started daemons are left running
+
+### Changed
+
+- Status bar no longer repeats the full hotkey list; see the Keys sidebar instead
+
 ## [0.2.0] - 2026-06-11
 
 ### Added

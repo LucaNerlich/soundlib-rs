@@ -19,6 +19,8 @@ use crate::player::Player;
 
 const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(400);
 const NOW_PLAYING_HEIGHT: u16 = 8;
+const SIDEBAR_WIDTH: u16 = 24;
+const SIDEBAR_MIN_MAIN_WIDTH: u16 = 30;
 
 type NodePath = Vec<usize>;
 
@@ -80,10 +82,15 @@ impl App {
             }
 
             if self.should_quit {
+                self.shutdown_playback();
                 break;
             }
         }
         Ok(())
+    }
+
+    fn shutdown_playback(&mut self) {
+        let _ = self.player.shutdown_started_daemon();
     }
 
     fn refresh_playback(&mut self) {
@@ -108,7 +115,18 @@ impl App {
             ])
             .split(frame.area());
 
-        self.draw_tree(frame, chunks[0]);
+        let main_area = chunks[0];
+        if main_area.width > SIDEBAR_WIDTH + SIDEBAR_MIN_MAIN_WIDTH {
+            let row = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(1), Constraint::Length(SIDEBAR_WIDTH)])
+                .split(main_area);
+            self.draw_tree(frame, row[0]);
+            self.draw_sidebar(frame, row[1]);
+        } else {
+            self.draw_tree(frame, main_area);
+        }
+
         self.draw_now_playing(frame, chunks[1]);
         self.draw_status(frame, chunks[2]);
     }
@@ -169,6 +187,53 @@ impl App {
                 &mut scrollbar_state,
             );
         }
+    }
+
+    fn draw_sidebar(&self, frame: &mut Frame, area: Rect) {
+        let lines = if self.filter_active {
+            vec![
+                section_line("Filter"),
+                key_line("Esc", "clear"),
+                key_line("Enter", "confirm"),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "Type to search",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ]
+        } else {
+            vec![
+                section_line("Navigate"),
+                key_line("j/k", "move"),
+                key_line("↑/↓", "move"),
+                key_line("PgUp/Dn", "page"),
+                key_line("l/→", "expand"),
+                key_line("h/←", "collapse"),
+                Line::from(""),
+                section_line("Playback"),
+                key_line("Enter", "play"),
+                key_line("p", "play"),
+                key_line("a", "append"),
+                key_line("Space", "toggle"),
+                key_line("n/b", "next/prev"),
+                key_line("s", "stop"),
+                key_line("z", "shuffle"),
+                key_line("R", "repeat"),
+                Line::from(""),
+                section_line("App"),
+                key_line("/", "filter"),
+                key_line("r", "rescan"),
+                key_line("q", "quit"),
+            ]
+        };
+
+        let paragraph = Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Keys"),
+        );
+
+        frame.render_widget(paragraph, area);
     }
 
     fn draw_now_playing(&self, frame: &mut Frame, area: Rect) {
@@ -239,15 +304,15 @@ impl App {
     }
 
     fn draw_status(&self, frame: &mut Frame, area: Rect) {
-        let help = if self.filter_active {
-            "Type to filter | Esc: clear | Enter: confirm"
+        let hint = if self.filter_active {
+            "Filtering — see Keys panel"
         } else {
-            "↑↓/jk: move | PgUp/PgDn: page | l/→: expand | h/←: collapse | Enter: play | a: append | Space: toggle | n/b: next/prev | s: stop | /: filter | r: rescan | q: quit"
+            "Keys panel →"
         };
 
         let paragraph = Paragraph::new(vec![
             Line::from(self.status.as_str()),
-            Line::from(help),
+            Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray))),
         ])
         .block(Block::default().borders(Borders::ALL).title("Status"));
 
@@ -282,6 +347,8 @@ impl App {
             KeyCode::Char('n') => self.run_player_action("next", |p| p.next()),
             KeyCode::Char('b') => self.run_player_action("prev", |p| p.prev()),
             KeyCode::Char('s') => self.run_player_action("stop", |p| p.stop()),
+            KeyCode::Char('z') => self.run_player_action("shuffle", |p| p.shuffle_toggle()),
+            KeyCode::Char('R') => self.run_player_action("repeat", |p| p.repeat_cycle()),
             KeyCode::Char('/') => {
                 self.filter_active = true;
                 self.filter.clear();
@@ -601,6 +668,12 @@ impl App {
     }
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        self.shutdown_playback();
+    }
+}
+
 #[cfg(test)]
 impl App {
     pub(crate) fn from_tree(root: LibraryNode, player: Player) -> Self {
@@ -896,13 +969,27 @@ mod tests {
             .expect("prev");
         app.simulate_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::empty()))
             .expect("stop");
+        app.simulate_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::empty()))
+            .expect("shuffle");
+        app.simulate_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::empty()))
+            .expect("repeat");
 
         let transport_cmds: Vec<_> = mock
             .log_lines()
             .into_iter()
             .filter(|line| !line.starts_with("status"))
             .collect();
-        assert_eq!(transport_cmds, vec!["toggle", "next", "prev", "stop"]);
+        assert_eq!(
+            transport_cmds,
+            vec![
+                "toggle",
+                "next",
+                "prev",
+                "stop",
+                "shuffle toggle",
+                "repeat cycle",
+            ]
+        );
     }
 
     #[test]
@@ -911,6 +998,46 @@ mod tests {
         app.simulate_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()))
             .expect("quit");
         assert!(app.should_quit());
+    }
+
+    #[test]
+    fn quit_shuts_down_daemon_started_by_play() {
+        let (mut app, mock) = app_from_test_library();
+        let loose_idx = app
+            .visible_row_names()
+            .iter()
+            .position(|n| n == "loose.ogg")
+            .expect("loose");
+
+        app.select_index(loose_idx);
+        app.simulate_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .expect("play");
+        assert!(mock.socket_path().exists());
+        assert!(app.player.started_daemon_for_test());
+
+        app.simulate_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()))
+            .expect("quit");
+        app.shutdown_playback();
+
+        assert!(!mock.socket_path().exists());
+        assert!(!app.player.started_daemon_for_test());
+    }
+
+    #[test]
+    fn quit_leaves_externally_started_daemon_running() {
+        let (mut app, mock) = app_from_test_library();
+        fs::write(mock.socket_path(), b"").expect("pretend daemon is running");
+
+        app.simulate_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()))
+            .expect("append");
+        assert!(mock.socket_path().exists());
+        assert!(!app.player.started_daemon_for_test());
+
+        app.simulate_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()))
+            .expect("quit");
+        app.shutdown_playback();
+
+        assert!(mock.socket_path().exists());
     }
 
     #[test]
@@ -974,6 +1101,27 @@ mod tests {
             },
         );
     }
+}
+
+fn section_line(title: &str) -> Line<'_> {
+    Line::from(Span::styled(
+        title,
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn key_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(
+            format!(" {key:<7}"),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(desc),
+    ])
 }
 
 fn truncate_middle(text: &str, max_len: usize) -> String {

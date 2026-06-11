@@ -26,7 +26,7 @@ A lightweight terminal audio library for browsing local music folders and playin
 
 ### cliamp daemon
 
-`soundlib-rs` talks to `cliamp` over its Unix socket (`~/.config/cliamp/cliamp.sock`). By default, if the daemon is not running when you queue or play, soundlib starts it headlessly:
+`soundlib-rs` talks to `cliamp` over its Unix socket (`~/.config/cliamp/cliamp.sock`). By default, if the daemon is not running when you queue or play, soundlib starts it headlessly. When you quit soundlib (`q`), any daemon **started by soundlib** is shut down automatically. A `cliamp` instance you started yourself before opening soundlib is left running.
 
 ```bash
 cliamp --daemon --log-level error
@@ -197,6 +197,8 @@ When a folder is selected, all audio files under it are collected recursively an
 | `n` | Next track |
 | `b` | Previous track |
 | `s` | Stop playback |
+| `z` | Toggle shuffle (`cliamp shuffle toggle`) |
+| `R` | Cycle repeat mode off → all → one (`cliamp repeat cycle`) |
 
 #### Library
 

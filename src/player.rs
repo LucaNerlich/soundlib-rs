@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -9,11 +10,12 @@ use anyhow::{Context, Result};
 const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(8);
 const DAEMON_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Player {
     cliamp_bin: String,
     auto_daemon: bool,
     socket_override: Option<PathBuf>,
+    started_daemon: Cell<bool>,
 }
 
 impl Player {
@@ -26,6 +28,7 @@ impl Player {
             cliamp_bin: cliamp_bin.into(),
             auto_daemon,
             socket_override: None,
+            started_daemon: Cell::new(false),
         }
     }
 
@@ -39,6 +42,7 @@ impl Player {
             cliamp_bin: cliamp_bin.into(),
             auto_daemon,
             socket_override: Some(socket_override),
+            started_daemon: Cell::new(false),
         }
     }
 
@@ -67,7 +71,22 @@ impl Player {
         if self.is_daemon_running() {
             let _ = self.run_without_ensure(&["stop"]);
         }
-        self.shutdown_daemon_process()
+        self.shutdown_daemon_process()?;
+        self.started_daemon.set(false);
+        Ok(())
+    }
+
+    /// Shuts down the cliamp daemon if soundlib started it. Leaves an externally running daemon alone.
+    pub fn shutdown_started_daemon(&self) -> Result<()> {
+        if !self.started_daemon.get() {
+            return Ok(());
+        }
+        self.stop_daemon()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn started_daemon_for_test(&self) -> bool {
+        self.started_daemon.get()
     }
 
     fn shutdown_daemon_process(&self) -> Result<()> {
@@ -141,6 +160,7 @@ impl Player {
                 )
             })?;
 
+        self.started_daemon.set(true);
         Ok(())
     }
 
@@ -215,6 +235,14 @@ impl Player {
 
     pub fn stop(&self) -> Result<()> {
         self.run(&["stop"])
+    }
+
+    pub fn shuffle_toggle(&self) -> Result<()> {
+        self.run(&["shuffle", "toggle"])
+    }
+
+    pub fn repeat_cycle(&self) -> Result<()> {
+        self.run(&["repeat", "cycle"])
     }
 
     pub(crate) fn run_for_output(&self, args: &[&str]) -> Result<String> {
@@ -327,6 +355,47 @@ mod tests {
         let player = Player::with_socket_override("cliamp", true, socket);
         let err = player.ensure_daemon().expect_err("not running");
         assert!(err.to_string().contains("not running"));
+    }
+
+    #[test]
+    fn shutdown_started_daemon_is_noop_without_spawn() {
+        let dir = TempDir::new().expect("tempdir");
+        let socket = dir.path().join("cliamp.sock");
+        fs::write(&socket, b"").expect("socket");
+
+        let player = Player::with_socket_override("cliamp", false, socket.clone());
+        player.shutdown_started_daemon().expect("noop shutdown");
+        assert!(socket.exists());
+        assert!(!player.started_daemon_for_test());
+    }
+
+    #[test]
+    fn shutdown_started_daemon_stops_spawned_daemon() {
+        let dir = TempDir::new().expect("tempdir");
+        let log = dir.path().join("log.txt");
+        let socket = dir.path().join("cliamp.sock");
+        let mock_dir = mock_cliamp(&log, false);
+        let bin = mock_dir.path().join("mock_cliamp.sh");
+        let track = dir.path().join("song.mp3");
+        fs::write(&track, b"mp3").expect("track");
+
+        let player = Player::with_socket_override(
+            bin.to_string_lossy().to_string(),
+            false,
+            socket.clone(),
+        );
+        player
+            .spawn_daemon_with_paths(&[track], true)
+            .expect("spawn");
+        fs::write(&socket, b"").expect("simulate daemon socket");
+        assert!(player.started_daemon_for_test());
+
+        player.shutdown_started_daemon().expect("shutdown");
+        assert!(!player.started_daemon_for_test());
+        assert!(!player.is_daemon_running());
+
+        let contents = fs::read_to_string(&log).expect("log");
+        assert!(contents.contains("stop"));
     }
 
     #[test]

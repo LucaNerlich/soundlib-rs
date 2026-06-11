@@ -60,9 +60,22 @@ fn play_stop_and_transport_forward_arguments() {
     player.next().expect("next");
     player.prev().expect("prev");
     player.stop().expect("stop");
+    player.shuffle_toggle().expect("shuffle");
+    player.repeat_cycle().expect("repeat");
 
     let lines = mock.log_lines();
-    assert_eq!(lines, vec!["play", "toggle", "next", "prev", "stop"]);
+    assert_eq!(
+        lines,
+        vec![
+            "play",
+            "toggle",
+            "next",
+            "prev",
+            "stop",
+            "shuffle toggle",
+            "repeat cycle",
+        ]
+    );
 }
 
 #[test]
