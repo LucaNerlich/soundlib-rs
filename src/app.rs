@@ -9,7 +9,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::{Frame, Terminal};
 
 use crate::config::Config;
@@ -28,6 +28,7 @@ pub struct App {
     library_root: PathBuf,
     expanded: HashSet<PathBuf>,
     visible_rows: Vec<NodePath>,
+    list_state: ListState,
     selected: usize,
     filter: String,
     filter_active: bool,
@@ -52,6 +53,7 @@ impl App {
             library_root: config.library_root.clone(),
             expanded,
             visible_rows: Vec::new(),
+            list_state: ListState::default(),
             selected: 0,
             filter: String::new(),
             filter_active: false,
@@ -96,7 +98,7 @@ impl App {
         }
     }
 
-    fn draw(&self, frame: &mut Frame) {
+    fn draw(&mut self, frame: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -111,23 +113,30 @@ impl App {
         self.draw_status(frame, chunks[2]);
     }
 
-    fn draw_tree(&self, frame: &mut Frame, area: Rect) {
+    fn draw_tree(&mut self, frame: &mut Frame, area: Rect) {
+        self.sync_list_state();
+
+        let total = self.visible_rows.len();
         let title = if self.filter_active {
-            format!("Library  filter: {}", self.filter)
+            format!("Library  filter: {}  ({total} items)", self.filter)
         } else {
-            format!("Library  {}", self.library_root.display())
+            format!(
+                "Library  {}  ({total} items, {} selected)",
+                self.library_root.display(),
+                self.selected + 1
+            )
         };
 
-        let items: Vec<ListItem> = self
-            .visible_rows
+        let visible_rows = self.visible_rows.clone();
+        let expanded = self.expanded.clone();
+        let items: Vec<ListItem> = visible_rows
             .iter()
-            .enumerate()
-            .map(|(idx, path)| {
+            .map(|path| {
                 let node = self.node_at(path);
                 let depth = path.len();
                 let indent = "  ".repeat(depth);
                 let marker = if node.is_folder() {
-                    if self.expanded.contains(&node.path) {
+                    if expanded.contains(&node.path) {
                         "▼ "
                     } else {
                         "▶ "
@@ -138,27 +147,28 @@ impl App {
                 let kind = if node.is_folder() { "dir" } else { "file" };
                 let line = Line::from(vec![
                     Span::raw(format!("{indent}{marker}")),
-                    Span::styled(
-                        &node.name,
-                        if idx == self.selected {
-                            Style::default().add_modifier(Modifier::REVERSED)
-                        } else {
-                            Style::default()
-                        },
-                    ),
+                    Span::raw(node.name.clone()),
                     Span::raw(format!("  [{kind}]")),
                 ]);
                 ListItem::new(line)
             })
             .collect();
 
-        let list = List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title),
-        );
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
-        frame.render_widget(list, area);
+        frame.render_stateful_widget(list, area, &mut self.list_state);
+
+        if self.visible_rows.len() > area.height.saturating_sub(2) as usize {
+            let mut scrollbar_state =
+                ScrollbarState::new(self.visible_rows.len()).position(self.list_state.offset());
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                area,
+                &mut scrollbar_state,
+            );
+        }
     }
 
     fn draw_now_playing(&self, frame: &mut Frame, area: Rect) {
@@ -232,7 +242,7 @@ impl App {
         let help = if self.filter_active {
             "Type to filter | Esc: clear | Enter: confirm"
         } else {
-            "↑↓/jk: move | l/→: expand | h/←: collapse | Enter: play | a: append | p: play folder | Space: toggle | n/b: next/prev | s: stop | /: filter | r: rescan | q: quit"
+            "↑↓/jk: move | PgUp/PgDn: page | l/→: expand | h/←: collapse | Enter: play | a: append | Space: toggle | n/b: next/prev | s: stop | /: filter | r: rescan | q: quit"
         };
 
         let paragraph = Paragraph::new(vec![
@@ -253,6 +263,16 @@ impl App {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
+            KeyCode::PageDown => self.move_selection_page(1),
+            KeyCode::PageUp => self.move_selection_page(-1),
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_selection_page(1)
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.move_selection_page(-1)
+            }
+            KeyCode::Home => self.select_index(0),
+            KeyCode::End => self.select_last(),
             KeyCode::Char('l') | KeyCode::Right => self.expand_selected(),
             KeyCode::Char('h') | KeyCode::Left => self.collapse_selected(),
             KeyCode::Enter => self.play_selected_replace()?,
@@ -307,6 +327,42 @@ impl App {
         let len = self.visible_rows.len() as i32;
         let next = (self.selected as i32 + delta).rem_euclid(len);
         self.selected = next as usize;
+        self.sync_list_state();
+    }
+
+    fn move_selection_page(&mut self, direction: i32) {
+        if self.visible_rows.is_empty() {
+            return;
+        }
+        let page = 10;
+        let len = self.visible_rows.len() as i32;
+        let next = if direction > 0 {
+            (self.selected as i32 + page).min(len - 1)
+        } else {
+            (self.selected as i32 - page).max(0)
+        };
+        self.selected = next as usize;
+        self.sync_list_state();
+    }
+
+    fn select_last(&mut self) {
+        if !self.visible_rows.is_empty() {
+            self.selected = self.visible_rows.len() - 1;
+            self.sync_list_state();
+        }
+    }
+
+    fn sync_list_state(&mut self) {
+        if self.visible_rows.is_empty() {
+            self.selected = 0;
+            self.list_state.select(None);
+            *self.list_state.offset_mut() = 0;
+            return;
+        }
+        if self.selected >= self.visible_rows.len() {
+            self.selected = self.visible_rows.len() - 1;
+        }
+        self.list_state.select(Some(self.selected));
     }
 
     fn expand_selected(&mut self) {
@@ -318,9 +374,30 @@ impl App {
             (node.is_folder(), node.path.clone(), node.name.clone())
         };
         if is_folder {
-            self.expanded.insert(folder_path);
+            self.expanded.insert(folder_path.clone());
             self.rebuild_visible_rows();
+            self.reveal_first_child_after(&path);
             self.status = format!("Expanded {name}");
+        }
+    }
+
+    fn reveal_first_child_after(&mut self, folder_path: &NodePath) {
+        let Some(folder_idx) = self
+            .visible_rows
+            .iter()
+            .position(|row| row == folder_path)
+        else {
+            return;
+        };
+
+        let child_depth = folder_path.len() + 1;
+        if let Some((child_idx, _)) = self.visible_rows[folder_idx + 1..]
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.len() == child_depth)
+        {
+            self.selected = folder_idx + 1 + child_idx;
+            self.sync_list_state();
         }
     }
 
@@ -448,9 +525,7 @@ impl App {
         let root_path = NodePath::new();
         self.append_visible(&root_path, filtering, &filter);
 
-        if self.selected >= self.visible_rows.len() {
-            self.selected = self.visible_rows.len().saturating_sub(1);
-        }
+        self.sync_list_state();
     }
 
     fn append_visible(&mut self, path: &NodePath, filtering: bool, filter: &str) {
@@ -514,6 +589,14 @@ impl App {
     fn select_path(&mut self, path: &NodePath) {
         if let Some(idx) = self.visible_rows.iter().position(|row| row == path) {
             self.selected = idx;
+            self.sync_list_state();
+        }
+    }
+
+    fn select_index(&mut self, index: usize) {
+        if index < self.visible_rows.len() {
+            self.selected = index;
+            self.sync_list_state();
         }
     }
 }
@@ -531,6 +614,7 @@ impl App {
             library_root,
             expanded,
             visible_rows: Vec::new(),
+            list_state: ListState::default(),
             selected: 0,
             filter: String::new(),
             filter_active: false,
@@ -587,12 +671,6 @@ impl App {
             self.expanded.remove(&path);
         }
         self.rebuild_visible_rows();
-    }
-
-    pub(crate) fn select_index(&mut self, index: usize) {
-        if index < self.visible_rows.len() {
-            self.selected = index;
-        }
     }
 
     pub(crate) fn subtree_matches_for_test(&self, node: &LibraryNode, filter: &str) -> bool {
@@ -667,10 +745,28 @@ mod tests {
         assert!(app.visible_row_names().contains(&"01-intro.mp3".to_string()));
 
         app.simulate_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::empty()))
+            .expect("parent");
+        app.simulate_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::empty()))
             .expect("collapse");
 
         assert!(!app.visible_row_names().contains(&"01-intro.mp3".to_string()));
         assert!(app.status_message().contains("Collapsed"));
+    }
+
+    #[test]
+    fn expand_selects_first_visible_child() {
+        let (mut app, _) = app_from_test_library();
+        let alpha_idx = app
+            .visible_row_names()
+            .iter()
+            .position(|n| n == "alpha")
+            .expect("alpha visible");
+
+        app.select_index(alpha_idx);
+        app.simulate_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::empty()))
+            .expect("expand");
+
+        assert_eq!(app.visible_row_names()[app.selected_index()], "01-intro.mp3");
     }
 
     #[test]

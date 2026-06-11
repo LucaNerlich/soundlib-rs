@@ -264,4 +264,39 @@ mod tests {
         );
         assert!(!tree.children.iter().any(|n| n.name == "data.bin"));
     }
+
+    #[test]
+    fn gothic_remake_has_tracks() {
+        let root = Path::new("/home/luca/Nextcloud/_media/Soundtracks/Gothic 1 Remake");
+        if !root.is_dir() {
+            return;
+        }
+        let ext = HashSet::from(["wav".to_string(), "mp3".to_string(), "flac".to_string()]);
+        let tree = scan_library(root, &ext).expect("scan");
+        assert!(!tree.children.is_empty());
+        assert_eq!(tree.children.len(), 37);
+    }
+
+    #[test]
+    fn gothic_in_full_library() {
+        let root = Path::new("/home/luca/Nextcloud/_media/Soundtracks");
+        if !root.is_dir() {
+            return;
+        }
+        let ext = HashSet::from([
+            "mp3".to_string(),
+            "flac".to_string(),
+            "ogg".to_string(),
+            "opus".to_string(),
+            "wav".to_string(),
+            "m4a".to_string(),
+        ]);
+        let tree = scan_library(root, &ext).expect("scan");
+        let gothic = tree
+            .children
+            .iter()
+            .find(|n| n.name == "Gothic 1 Remake")
+            .expect("gothic in library");
+        assert_eq!(gothic.children.len(), 37);
+    }
 }
