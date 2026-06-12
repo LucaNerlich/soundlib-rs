@@ -4,19 +4,21 @@
 
 A lightweight, self-contained terminal audio library for browsing local music folders and playing tracks directly in your terminal.
 
-`soundlib-rs` scans a configurable folder tree (for example a game soundtrack collection), presents it in an interactive TUI, and plays audio in-process using a pure-Rust engine ([rodio](https://github.com/RustAudio/rodio) for output, [Symphonia](https://github.com/pdeljanov/Symphonia) for decoding, [lofty](https://github.com/Serial-ATA/lofty-rs) for tags). There is no external player or daemon — it runs the same on Linux and macOS.
+`soundlib-rs` scans a configurable folder tree (for example a game soundtrack collection), presents it in an interactive TUI, and plays audio in-process using a pure-Rust engine ([rodio](https://github.com/RustAudio/rodio) for output, [Symphonia](https://github.com/pdeljanov/Symphonia) for decoding, [lofty](https://github.com/Serial-ATA/lofty-rs) for tags). There is no external player or daemon - it runs the same on Linux and macOS.
+
+![img.png](img.png)
 
 ## Features
 
-- **Tree browser** — navigate albums and tracks with expand/collapse
-- **Folder playback** — queue all audio files in a folder recursively, in natural sort order
-- **Single-file playback** — queue individual tracks
-- **Append mode** — add to the current queue without stopping playback
-- **Transport controls** — play/pause, next, previous, stop
-- **Shuffle and repeat** — shuffle the queue and cycle repeat off → all → one
-- **Live filter** — type-to-filter across the library tree
-- **Configurable** — YAML config file with environment variable overrides
-- **Rescan** — refresh the library without restarting
+- **Tree browser** - navigate albums and tracks with expand/collapse
+- **Folder playback** - queue all audio files in a folder recursively, in natural sort order
+- **Single-file playback** - queue individual tracks
+- **Append mode** - add to the current queue without stopping playback
+- **Transport controls** - play/pause, next, previous, stop
+- **Shuffle and repeat** - shuffle the queue and cycle repeat off → all → one
+- **Live filter** - type-to-filter across the library tree
+- **Configurable** - YAML config file with environment variable overrides
+- **Rescan** - refresh the library without restarting
 
 ## How playback works
 
@@ -56,7 +58,7 @@ present.
 | Requirement | Notes |
 |-------------|-------|
 | **Rust toolchain** | Edition 2024, Rust 1.87+. Install via [rustup](https://rustup.rs/). |
-| **ALSA dev headers (Linux only)** | `cpal` needs them at build time: `libasound2-dev` (Debian/Ubuntu) or `alsa-lib` (Arch/Fedora). macOS uses built-in CoreAudio — no extra packages. |
+| **ALSA dev headers (Linux only)** | `cpal` needs them at build time: `libasound2-dev` (Debian/Ubuntu) or `alsa-lib` (Arch/Fedora). macOS uses built-in CoreAudio - no extra packages. |
 | **A music folder** | A directory tree containing audio files (`.mp3`, `.flac`, `.ogg`, etc.). |
 
 ## Build
@@ -151,13 +153,13 @@ Environment variables take precedence over the YAML file:
 | `SOUNDLIB_ROOT` | Overrides `library_root` |
 | `SOUNDLIB_CONFIG` | Use an alternate config file path |
 
-Example — point at a different library for one session:
+Example - point at a different library for one session:
 
 ```bash
 SOUNDLIB_ROOT=/mnt/music/osts soundlib-rs
 ```
 
-Example — custom config location:
+Example - custom config location:
 
 ```bash
 SOUNDLIB_CONFIG=~/.config/soundlib/work.yaml soundlib-rs
@@ -171,9 +173,9 @@ soundlib-rs
 
 The TUI opens in your terminal with three panes:
 
-1. **Library** — expandable tree of folders and audio files under `library_root`
-2. **Now Playing** — live track title, artist, progress bar, elapsed/total time, shuffle/repeat, and an activity visualizer
-3. **Status** — last action, errors, and keybinding hints
+1. **Library** - expandable tree of folders and audio files under `library_root`
+2. **Now Playing** - live track title, artist, progress bar, elapsed/total time, shuffle/repeat, and an activity visualizer
+3. **Status** - last action, errors, and keybinding hints
 
 The library root folder is shown at the top of the tree and expanded by default. Folders are marked `[dir]`, files `[file]`.
 
@@ -227,7 +229,7 @@ When a folder is selected, all audio files under it are collected recursively an
 | `r` | Rescan `library_root` from disk |
 | `q` | Quit |
 
-In filter mode, type any substring to narrow the tree. Matching is case-insensitive and includes folder names — if a child matches, ancestor folders are shown too.
+In filter mode, type any substring to narrow the tree. Matching is case-insensitive and includes folder names - if a child matches, ancestor folders are shown too.
 
 ## Project structure
 
@@ -276,4 +278,4 @@ reset
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).

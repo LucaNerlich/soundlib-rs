@@ -247,7 +247,7 @@ impl App {
             let headline = if info.artist.is_empty() {
                 format!("{} {}", info.state_icon(), info.title)
             } else {
-                format!("{} {} — {}", info.state_icon(), info.artist, info.title)
+                format!("{} {} - {}", info.state_icon(), info.artist, info.title)
             };
 
             let file_name = std::path::Path::new(&info.path)
@@ -308,7 +308,7 @@ impl App {
 
     fn draw_status(&self, frame: &mut Frame, area: Rect) {
         let hint = if self.filter_active {
-            "Filtering — see Keys panel"
+            "Filtering - see Keys panel"
         } else {
             "Keys panel →"
         };

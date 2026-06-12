@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Embedded cross-OS audio engine replaces the external cliamp daemon — no cliamp installation required
+- Embedded cross-OS audio engine replaces the external cliamp daemon - no cliamp installation required
 - GitHub Actions CI workflow (`rust.yml`) for automated builds and tests
 - ALSA dev headers installed automatically in the Linux CI build
 
