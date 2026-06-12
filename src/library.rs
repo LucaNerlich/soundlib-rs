@@ -1,33 +1,60 @@
+//! Scanning the library root into an in-memory tree.
+//!
+//! [`scan_library`] walks a directory recursively, keeping only files whose
+//! extension is in the provided set, and returns a [`LibraryNode`] tree. Entries
+//! at every level are sorted with a natural ordering so `track2` precedes
+//! `track10`. [`collect_tracks`] flattens a node into the playable files beneath
+//! it, preserving that order.
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use walkdir::WalkDir;
 
+/// Whether a [`LibraryNode`] is a directory or a playable file.
 #[derive(Debug, Clone)]
 pub enum NodeKind {
+    /// A directory that may contain further nodes.
     Folder,
+    /// A single audio file (a leaf node).
     File,
 }
 
+/// A node in the library tree: either a folder with children or an audio file.
 #[derive(Debug, Clone)]
 pub struct LibraryNode {
+    /// Display name (the final path component).
     pub name: String,
+    /// Absolute path to the folder or file on disk.
     pub path: PathBuf,
+    /// Whether this node is a [`NodeKind::Folder`] or [`NodeKind::File`].
     pub kind: NodeKind,
+    /// Child nodes, naturally sorted. Always empty for files.
     pub children: Vec<LibraryNode>,
 }
 
 impl LibraryNode {
+    /// Returns `true` if this node is a folder.
     pub fn is_folder(&self) -> bool {
         matches!(self.kind, NodeKind::Folder)
     }
 
+    /// Returns `true` if this node is a file.
     pub fn is_file(&self) -> bool {
         matches!(self.kind, NodeKind::File)
     }
 }
 
+/// Recursively scan `root`, building a [`LibraryNode`] tree containing every
+/// subdirectory and every file whose lowercased extension is in `extensions`.
+///
+/// Children at each level are sorted naturally (numeric runs compared as
+/// numbers). The returned root node is always a [`NodeKind::Folder`].
+///
+/// # Errors
+///
+/// Returns an error if a directory cannot be read.
 pub fn scan_library(root: &Path, extensions: &HashSet<String>) -> Result<LibraryNode> {
     let name = root
         .file_name()
@@ -61,6 +88,11 @@ pub fn scan_library(root: &Path, extensions: &HashSet<String>) -> Result<Library
     })
 }
 
+/// Collect all audio file paths under `node`, depth-first, in tree order.
+///
+/// For a file node this returns a single-element vector; for a folder it
+/// returns every file beneath it recursively. The ordering matches the
+/// naturally sorted tree, which is the order tracks are queued for playback.
 pub fn collect_tracks(node: &LibraryNode) -> Vec<PathBuf> {
     let mut tracks = Vec::new();
     collect_tracks_inner(node, &mut tracks);

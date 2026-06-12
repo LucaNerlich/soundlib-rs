@@ -1,3 +1,12 @@
+//! The terminal UI: state, layout, and the event loop.
+//!
+//! [`App`] holds the scanned [`LibraryNode`] tree plus the view state (selection,
+//! expansion, filter) and a boxed [`PlaybackEngine`]. [`App::run`] drives the
+//! draw/poll/handle loop against a [ratatui](https://docs.rs/ratatui) terminal:
+//! it periodically refreshes the playback snapshot, renders the tree, Now
+//! Playing, and status panes, and dispatches key events to navigation, playback,
+//! and library actions.
+
 use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
@@ -24,6 +33,11 @@ const SIDEBAR_MIN_MAIN_WIDTH: u16 = 30;
 
 type NodePath = Vec<usize>;
 
+/// The interactive terminal application: library tree, view state, and the
+/// playback engine it controls.
+///
+/// Construct it with [`App::new`] from a loaded [`Config`], then drive it with
+/// [`App::run`]. On quit (and on drop) it shuts down the playback engine.
 pub struct App {
     root: LibraryNode,
     extensions: HashSet<String>,
@@ -43,6 +57,12 @@ pub struct App {
 }
 
 impl App {
+    /// Build an app from `config`: scan the library root, expand the root node,
+    /// and start a [`RodioEngine`] at the configured volume.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the library root cannot be scanned.
     pub fn new(config: &Config) -> Result<Self> {
         let extensions = config.extension_set();
         let root = scan_library(&config.library_root, &extensions)?;
@@ -73,6 +93,15 @@ impl App {
         Ok(app)
     }
 
+    /// Run the main event loop until the user quits.
+    ///
+    /// Each iteration refreshes the playback snapshot when due, draws the UI,
+    /// and handles one key event (polling for up to 100ms). Returns once the
+    /// quit key is pressed, after shutting down playback.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if drawing or reading terminal events fails.
     pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         loop {
             self.refresh_playback_if_due();

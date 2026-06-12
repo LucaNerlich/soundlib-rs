@@ -1,3 +1,15 @@
+//! Configuration loading, validation, and environment overrides.
+//!
+//! The config is a small YAML file (see [`Config`]) stored under the platform
+//! config directory, e.g. `~/.config/soundlib/config.yaml` on Linux or
+//! `~/Library/Application Support/soundlib/config.yaml` on macOS. It is created
+//! with sensible defaults on first run.
+//!
+//! Two environment variables influence loading:
+//!
+//! - `SOUNDLIB_CONFIG` — use an alternate config file path.
+//! - `SOUNDLIB_ROOT` — override [`Config::library_root`] for a single run.
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -5,10 +17,22 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// User configuration for the library scan and playback engine.
+///
+/// Serialized to and from YAML. Missing fields fall back to their defaults via
+/// [`Config::default`] / `#[serde(default)]`, so older config files keep
+/// loading after new fields are added.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// Top-level directory scanned for audio files. Must exist and be a
+    /// directory, otherwise loading fails validation. Defaults to the OS music
+    /// folder.
     pub library_root: PathBuf,
+    /// File extensions to include when scanning, matched case-insensitively
+    /// with any leading dot stripped (see [`Config::extension_set`]).
     pub audio_extensions: Vec<String>,
+    /// Output volume multiplier. `1.0` is the unmodified signal; the engine
+    /// clamps applied values to the range `0.0..=2.0`.
     #[serde(default = "default_volume")]
     pub volume: f32,
 }
@@ -43,6 +67,14 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Load the configuration from the default path (or `SOUNDLIB_CONFIG`),
+    /// creating it with defaults if absent, applying environment overrides,
+    /// and validating the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or parsed, or if validation
+    /// fails (for example, the library root does not exist).
     pub fn load() -> Result<Self> {
         Self::load_from_path(&config_path()?, true)
     }
@@ -82,6 +114,9 @@ impl Config {
         Ok(())
     }
 
+    /// Normalize [`Config::audio_extensions`] into a lookup set: leading dots
+    /// removed and lowercased, ready for case-insensitive matching during the
+    /// library scan.
     pub fn extension_set(&self) -> std::collections::HashSet<String> {
         self.audio_extensions
             .iter()

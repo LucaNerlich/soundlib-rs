@@ -1,3 +1,10 @@
+//! Binary entry point for `soundlib-rs`.
+//!
+//! Loads the [configuration](soundlib_rs::config::Config), builds the
+//! [`App`](soundlib_rs::app::App), installs a terminal guard that restores the
+//! terminal on exit or panic, and runs the TUI event loop. All library
+//! functionality lives in the [`soundlib_rs`] crate.
+
 use anyhow::Result;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;

@@ -1,3 +1,25 @@
+//! The embedded playback engine and its audio-free playlist core.
+//!
+//! The UI talks to playback only through the [`PlaybackEngine`] trait. In
+//! production that trait is implemented by [`RodioEngine`], which spawns a
+//! dedicated background thread owning the (non-`Send`) audio device and a
+//! [`rodio`] sink. Commands flow to that thread over a channel and a shared
+//! [`PlaybackInfo`] snapshot flows back, polled by the TUI.
+//!
+//! All queue logic — ordering, the current position, shuffle, repeat, and
+//! next/previous navigation — lives in [`Playlist`], which performs no audio
+//! I/O and is therefore fully unit testable.
+//!
+//! ```no_run
+//! use soundlib_rs::player::{PlaybackEngine, RodioEngine};
+//! use std::path::PathBuf;
+//!
+//! let engine = RodioEngine::new();
+//! engine.play_replace(vec![PathBuf::from("/music/a.mp3"), PathBuf::from("/music/b.flac")]);
+//! engine.next();
+//! engine.shutdown();
+//! ```
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -17,15 +39,22 @@ use crate::playback::PlaybackInfo;
 const TICK: Duration = Duration::from_millis(100);
 
 /// Repeat behaviour applied when a track finishes on its own.
+///
+/// Only affects [automatic advance](Playlist::advance_auto); manual
+/// [`next`](Playlist::next)/[`prev`](Playlist::prev) always move and wrap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Repeat {
+    /// Stop after the last track.
     #[default]
     Off,
+    /// Wrap to the first track after the last.
     All,
+    /// Replay the current track indefinitely.
     One,
 }
 
 impl Repeat {
+    /// Advance to the next mode in the cycle: `Off → All → One → Off`.
     pub fn cycle(self) -> Self {
         match self {
             Repeat::Off => Repeat::All,
@@ -34,6 +63,7 @@ impl Repeat {
         }
     }
 
+    /// The lowercase token used in [`PlaybackInfo`]: `"off"`, `"all"`, `"one"`.
     pub fn as_str(self) -> &'static str {
         match self {
             Repeat::Off => "off",
@@ -43,15 +73,21 @@ impl Repeat {
     }
 }
 
+/// The logical playback state, independent of the audio backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PlayState {
+    /// Nothing is playing.
     #[default]
     Stopped,
+    /// A track is actively playing.
     Playing,
+    /// A track is loaded but paused.
     Paused,
 }
 
 impl PlayState {
+    /// The lowercase token used in [`PlaybackInfo`]: `"stopped"`, `"playing"`,
+    /// `"paused"`.
     pub fn as_str(self) -> &'static str {
         match self {
             PlayState::Stopped => "stopped",
@@ -64,30 +100,44 @@ impl PlayState {
 /// Pure, audio-free playlist bookkeeping. Owns the track ordering, the current
 /// position, shuffle/repeat modes and the logical play state. This is kept free
 /// of any `rodio` interaction so it can be unit tested deterministically.
+///
+/// Shuffle is modelled as a permutation (`order`) over the track indices, with
+/// the current position indexing into that permutation; toggling shuffle keeps
+/// the active track current.
 #[derive(Debug, Default, Clone)]
 pub struct Playlist {
     tracks: Vec<PathBuf>,
     order: Vec<usize>,
     pos: usize,
+    /// Whether shuffle is enabled.
     pub shuffle: bool,
+    /// Repeat mode applied on automatic advance.
     pub repeat: Repeat,
+    /// Current logical play state.
     pub state: PlayState,
 }
 
 impl Playlist {
+    /// Create an empty, stopped playlist.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Number of tracks in the queue.
     pub fn len(&self) -> usize {
         self.tracks.len()
     }
 
+    /// Returns `true` if the queue has no tracks.
     pub fn is_empty(&self) -> bool {
         self.tracks.is_empty()
     }
 
     /// Replace the whole queue and position at the first track.
+    ///
+    /// `rng` seeds the shuffle permutation when shuffle is enabled. The state
+    /// becomes [`PlayState::Playing`] for a non-empty queue, otherwise
+    /// [`PlayState::Stopped`].
     pub fn set_tracks<R: Rng>(&mut self, tracks: Vec<PathBuf>, rng: &mut R) {
         self.tracks = tracks;
         self.pos = 0;
@@ -108,6 +158,7 @@ impl Playlist {
         }
     }
 
+    /// The path of the track at the current position, if any.
     pub fn current(&self) -> Option<&PathBuf> {
         self.order.get(self.pos).and_then(|&idx| self.tracks.get(idx))
     }
@@ -160,10 +211,12 @@ impl Playlist {
         self.current()
     }
 
+    /// Mark playback as stopped. Leaves the queue and position intact.
     pub fn stop(&mut self) {
         self.state = PlayState::Stopped;
     }
 
+    /// Advance the repeat mode (`Off → All → One → Off`).
     pub fn cycle_repeat(&mut self) {
         self.repeat = self.repeat.cycle();
     }
@@ -212,23 +265,42 @@ enum Command {
 
 /// Abstraction over the playback backend so the TUI can be exercised in tests
 /// without a real audio device.
+///
+/// All control methods are fire-and-forget: they enqueue an action and return
+/// immediately. Observe the result through [`snapshot`](PlaybackEngine::snapshot).
 pub trait PlaybackEngine {
+    /// Replace the queue with `tracks` and start playing from the first one.
     fn play_replace(&self, tracks: Vec<PathBuf>);
+    /// Append `tracks` to the queue. If nothing is playing, playback starts.
     fn append(&self, tracks: Vec<PathBuf>);
+    /// Toggle between playing and paused (starts the current track if stopped).
     fn toggle(&self);
+    /// Skip to the next track, wrapping around at the end of the queue.
     fn next(&self);
+    /// Skip to the previous track, wrapping around at the start of the queue.
     fn prev(&self);
+    /// Stop playback and clear the current track.
     fn stop(&self);
+    /// Toggle shuffle, keeping the current track active.
     fn shuffle_toggle(&self);
+    /// Cycle the repeat mode (`off → all → one → off`).
     fn repeat_cycle(&self);
+    /// Set the output volume multiplier (`1.0` = unmodified).
     fn set_volume(&self, volume: f32);
+    /// The latest playback snapshot, or `None` when nothing is active.
     fn snapshot(&self) -> Option<PlaybackInfo>;
+    /// Signal the backend to stop and release resources.
     fn shutdown(&self);
 }
 
 /// The real, `rodio`-backed engine. Owns a background thread that holds the
 /// (non-`Send`) audio device and sink, and exposes a shared snapshot the UI
 /// polls.
+///
+/// If no audio device can be opened, the engine still constructs and accepts
+/// commands — they simply become no-ops — so the UI keeps working. The
+/// background thread is stopped and joined on [`shutdown`](PlaybackEngine::shutdown)
+/// and again on drop.
 pub struct RodioEngine {
     cmd_tx: Sender<Command>,
     state: Arc<Mutex<PlaybackInfo>>,
@@ -236,6 +308,7 @@ pub struct RodioEngine {
 }
 
 impl RodioEngine {
+    /// Create the engine and spawn its background audio thread.
     pub fn new() -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let state = Arc::new(Mutex::new(PlaybackInfo::default()));
