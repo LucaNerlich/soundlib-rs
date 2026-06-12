@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.1] - 2026-06-12
+
+### Added
+
+- Extensive rustdoc across the public API so docs.rs renders a populated reference
+- `cargo install soundlib-rs` instructions and a Crates.io badge in the README
+
+### Changed
+
+- Documentation and UI text now use consistent dash styling
+- Crate description and keywords updated to reflect the embedded audio engine (no cliamp)
+
 ## [2.0.0] - 2026-06-12
 
 ### Added
