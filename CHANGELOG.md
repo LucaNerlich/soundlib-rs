@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.0] - 2026-06-12
+
+### Added
+
+- Embedded cross-OS audio engine replaces the external cliamp daemon — no cliamp installation required
+- GitHub Actions CI workflow (`rust.yml`) for automated builds and tests
+- ALSA dev headers installed automatically in the Linux CI build
+
+### Changed
+
+- Audio playback is now handled entirely within soundlib-rs via the embedded engine; cliamp remote control is no longer used
+
 ## [1.0.0] - 2026-06-11
 
 ### Added
