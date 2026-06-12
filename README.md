@@ -1,5 +1,7 @@
 # soundlib-rs
 
+[![Crates.io](https://img.shields.io/crates/v/soundlib-rs)](https://crates.io/crates/soundlib-rs)
+
 A lightweight, self-contained terminal audio library for browsing local music folders and playing tracks directly in your terminal.
 
 `soundlib-rs` scans a configurable folder tree (for example a game soundtrack collection), presents it in an interactive TUI, and plays audio in-process using a pure-Rust engine ([rodio](https://github.com/RustAudio/rodio) for output, [Symphonia](https://github.com/pdeljanov/Symphonia) for decoding, [lofty](https://github.com/Serial-ATA/lofty-rs) for tags). There is no external player or daemon — it runs the same on Linux and macOS.
