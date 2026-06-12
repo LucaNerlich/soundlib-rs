@@ -14,8 +14,8 @@ use ratatui::{Frame, Terminal};
 
 use crate::config::Config;
 use crate::library::{collect_tracks, scan_library, LibraryNode};
-use crate::playback::{self, format_duration, progress_bar, activity_wave, PlaybackInfo};
-use crate::player::Player;
+use crate::playback::{format_duration, progress_bar, activity_wave, PlaybackInfo};
+use crate::player::{PlaybackEngine, RodioEngine};
 
 const STATUS_POLL_INTERVAL: Duration = Duration::from_millis(400);
 const NOW_PLAYING_HEIGHT: u16 = 8;
@@ -35,7 +35,7 @@ pub struct App {
     filter: String,
     filter_active: bool,
     status: String,
-    player: Player,
+    player: Box<dyn PlaybackEngine>,
     playback: Option<PlaybackInfo>,
     last_status_poll: Instant,
     ui_tick: u64,
@@ -49,6 +49,9 @@ impl App {
         let mut expanded = HashSet::new();
         expanded.insert(root.path.clone());
 
+        let player = RodioEngine::new();
+        player.set_volume(config.volume);
+
         let mut app = Self {
             root,
             extensions,
@@ -60,7 +63,7 @@ impl App {
             filter: String::new(),
             filter_active: false,
             status: "Ready".into(),
-            player: Player::with_options(config.cliamp_bin.clone(), config.cliamp_auto_daemon),
+            player: Box::new(player),
             playback: None,
             last_status_poll: Instant::now() - STATUS_POLL_INTERVAL,
             ui_tick: 0,
@@ -90,11 +93,11 @@ impl App {
     }
 
     fn shutdown_playback(&mut self) {
-        let _ = self.player.shutdown_started_daemon();
+        self.player.shutdown();
     }
 
     fn refresh_playback(&mut self) {
-        self.playback = playback::poll_player(&self.player);
+        self.playback = self.player.snapshot();
         self.last_status_poll = Instant::now();
         self.ui_tick = self.ui_tick.wrapping_add(1);
     }
@@ -495,24 +498,22 @@ impl App {
             return Ok(());
         };
         let node = self.node_at(&path);
+        let name = node.name.clone();
+        let tracks = if node.is_file() {
+            vec![node.path.clone()]
+        } else {
+            collect_tracks(node)
+        };
 
-        if !node.is_file() && collect_tracks(node).is_empty() {
-            self.status = format!("No audio files in {}", node.name);
+        if tracks.is_empty() {
+            self.status = format!("No audio files in {name}");
             return Ok(());
         }
 
-        match self.player.play_replace(&[node.path.clone()]) {
-            Ok(()) => {
-                let count = if node.is_file() {
-                    1
-                } else {
-                    collect_tracks(node).len()
-                };
-                self.status = format!("Playing {} track(s) from {}", count, node.name);
-                self.refresh_playback();
-            }
-            Err(err) => self.status = format!("Play failed: {err:#}"),
-        }
+        let count = tracks.len();
+        self.player.play_replace(tracks);
+        self.status = format!("Playing {count} track(s) from {name}");
+        self.refresh_playback();
         Ok(())
     }
 
@@ -521,6 +522,7 @@ impl App {
             return Ok(());
         };
         let node = self.node_at(&path);
+        let name = node.name.clone();
         let tracks = if node.is_file() {
             vec![node.path.clone()]
         } else {
@@ -528,41 +530,25 @@ impl App {
         };
 
         if tracks.is_empty() {
-            self.status = format!("No audio files in {}", node.name);
+            self.status = format!("No audio files in {name}");
             return Ok(());
         }
 
-        if !self.player.is_daemon_running() {
-            match self.player.play_replace(&[node.path.clone()]) {
-                Ok(()) => {
-                    self.status = format!("Playing {} track(s) from {}", tracks.len(), node.name);
-                }
-                Err(err) => self.status = format!("Play failed: {err:#}"),
-            }
-            return Ok(());
-        }
-
-        match self.player.queue_tracks(&tracks) {
-            Ok(count) => {
-                self.status = format!("Queued {} track(s) from {}", count, node.name);
-            }
-            Err(err) => self.status = format!("Queue failed: {err:#}"),
-        }
+        let count = tracks.len();
+        self.player.append(tracks);
+        self.status = format!("Queued {count} track(s) from {name}");
+        self.refresh_playback();
         Ok(())
     }
 
     fn run_player_action(
         &mut self,
         label: &str,
-        action: impl FnOnce(&Player) -> Result<()>,
+        action: impl FnOnce(&dyn PlaybackEngine),
     ) {
-        match action(&self.player) {
-            Ok(()) => {
-                self.status = format!("cliamp {label}");
-                self.refresh_playback();
-            }
-            Err(err) => self.status = format!("cliamp {label} failed: {err:#}"),
-        }
+        action(self.player.as_ref());
+        self.status = label.to_string();
+        self.refresh_playback();
     }
 
     fn rescan(&mut self) -> Result<()> {
@@ -676,7 +662,7 @@ impl Drop for App {
 
 #[cfg(test)]
 impl App {
-    pub(crate) fn from_tree(root: LibraryNode, player: Player) -> Self {
+    pub(crate) fn from_tree(root: LibraryNode, player: Box<dyn PlaybackEngine>) -> Self {
         let library_root = root.path.clone();
         let mut expanded = HashSet::new();
         expanded.insert(root.path.clone());
@@ -755,25 +741,15 @@ impl App {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use std::fs;
-
     use super::*;
-    use crate::testsupport::{file_node, node, MockCliamp, TestLibrary};
+    use crate::testsupport::{file_node, node, RecordingEngine, TestLibrary};
 
-    fn test_player(mock: &MockCliamp) -> Player {
-        Player::with_socket_override(
-            mock.bin.to_string_lossy().to_string(),
-            false,
-            mock.socket_path(),
-        )
-    }
-
-    fn app_from_test_library() -> (App, MockCliamp) {
+    fn app_from_test_library() -> (App, RecordingEngine) {
         let lib = TestLibrary::minimal();
-        let mock = MockCliamp::success();
+        let engine = RecordingEngine::new();
         let tree = lib.scan();
-        let app = App::from_tree(tree, test_player(&mock));
-        (app, mock)
+        let app = App::from_tree(tree, Box::new(engine.clone()));
+        (app, engine)
     }
 
     #[test]
@@ -877,8 +853,8 @@ mod tests {
     }
 
     #[test]
-    fn play_selected_replace_starts_daemon_with_path() {
-        let (mut app, mock) = app_from_test_library();
+    fn play_selected_replace_sends_play_replace_with_track() {
+        let (mut app, engine) = app_from_test_library();
         let loose_idx = app
             .visible_row_names()
             .iter()
@@ -889,17 +865,17 @@ mod tests {
         app.simulate_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
             .expect("play");
 
-        let lines = mock.log_lines();
-        assert!(lines.iter().any(|l| l.contains("--daemon") && l.contains("--auto-play")));
-        assert!(lines.iter().any(|l| l.contains("loose.ogg")));
-        assert!(mock.socket_path().exists());
+        assert!(engine.commands().contains(&"play_replace".to_string()));
+        assert!(engine
+            .last_tracks()
+            .iter()
+            .any(|p| p.ends_with("loose.ogg")));
         assert!(app.status_message().contains("Playing 1 track"));
     }
 
     #[test]
-    fn play_selected_append_queues_when_daemon_running() {
-        let (mut app, mock) = app_from_test_library();
-        fs::write(mock.socket_path(), b"").expect("pretend daemon is running");
+    fn play_selected_append_sends_append_with_track() {
+        let (mut app, engine) = app_from_test_library();
 
         let loose_idx = app
             .visible_row_names()
@@ -911,15 +887,17 @@ mod tests {
         app.simulate_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()))
             .expect("append");
 
-        let lines = mock.log_lines();
-        assert!(!lines.iter().any(|l| l.contains("--daemon")));
-        assert!(lines.iter().any(|l| l.contains("queue") && l.contains("loose.ogg")));
+        assert!(engine.commands().contains(&"append".to_string()));
+        assert!(engine
+            .last_tracks()
+            .iter()
+            .any(|p| p.ends_with("loose.ogg")));
         assert!(app.status_message().contains("Queued 1 track"));
     }
 
     #[test]
-    fn play_folder_starts_daemon_with_folder_path() {
-        let (mut app, mock) = app_from_test_library();
+    fn play_folder_sends_all_folder_tracks() {
+        let (mut app, engine) = app_from_test_library();
         let alpha_idx = app
             .visible_row_names()
             .iter()
@@ -930,17 +908,17 @@ mod tests {
         app.simulate_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::empty()))
             .expect("play folder");
 
-        let lines = mock.log_lines();
-        assert!(lines.iter().any(|l| l.contains("--daemon") && l.contains("alpha")));
+        assert!(engine.commands().contains(&"play_replace".to_string()));
+        assert_eq!(engine.last_tracks().len(), 2);
         assert!(app.status_message().contains("Playing 2 track"));
     }
 
     #[test]
     fn play_empty_folder_sets_status_without_panicking() {
         let lib = TestLibrary::empty_album();
-        let mock = MockCliamp::success();
+        let engine = RecordingEngine::new();
         let tree = lib.scan();
-        let mut app = App::from_tree(tree, test_player(&mock));
+        let mut app = App::from_tree(tree, Box::new(engine.clone()));
 
         let idx = app
             .visible_row_names()
@@ -953,13 +931,12 @@ mod tests {
             .expect("play empty");
 
         assert!(app.status_message().contains("No audio files"));
-        assert!(mock.log_lines().is_empty());
+        assert!(!engine.commands().contains(&"play_replace".to_string()));
     }
 
     #[test]
-    fn transport_keys_delegate_to_cliamp() {
-        let (mut app, mock) = app_from_test_library();
-        fs::write(mock.socket_path(), b"").expect("pretend daemon is running");
+    fn transport_keys_delegate_to_engine() {
+        let (mut app, engine) = app_from_test_library();
 
         app.simulate_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::empty()))
             .expect("toggle");
@@ -974,20 +951,15 @@ mod tests {
         app.simulate_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::empty()))
             .expect("repeat");
 
-        let transport_cmds: Vec<_> = mock
-            .log_lines()
-            .into_iter()
-            .filter(|line| !line.starts_with("status"))
-            .collect();
         assert_eq!(
-            transport_cmds,
+            engine.commands(),
             vec![
                 "toggle",
                 "next",
                 "prev",
                 "stop",
-                "shuffle toggle",
-                "repeat cycle",
+                "shuffle_toggle",
+                "repeat_cycle",
             ]
         );
     }
@@ -1001,51 +973,22 @@ mod tests {
     }
 
     #[test]
-    fn quit_shuts_down_daemon_started_by_play() {
-        let (mut app, mock) = app_from_test_library();
-        let loose_idx = app
-            .visible_row_names()
-            .iter()
-            .position(|n| n == "loose.ogg")
-            .expect("loose");
-
-        app.select_index(loose_idx);
-        app.simulate_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
-            .expect("play");
-        assert!(mock.socket_path().exists());
-        assert!(app.player.started_daemon_for_test());
+    fn quit_shuts_down_engine() {
+        let (mut app, engine) = app_from_test_library();
 
         app.simulate_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()))
             .expect("quit");
         app.shutdown_playback();
 
-        assert!(!mock.socket_path().exists());
-        assert!(!app.player.started_daemon_for_test());
-    }
-
-    #[test]
-    fn quit_leaves_externally_started_daemon_running() {
-        let (mut app, mock) = app_from_test_library();
-        fs::write(mock.socket_path(), b"").expect("pretend daemon is running");
-
-        app.simulate_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()))
-            .expect("append");
-        assert!(mock.socket_path().exists());
-        assert!(!app.player.started_daemon_for_test());
-
-        app.simulate_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()))
-            .expect("quit");
-        app.shutdown_playback();
-
-        assert!(mock.socket_path().exists());
+        assert!(engine.commands().contains(&"shutdown".to_string()));
     }
 
     #[test]
     fn subtree_matches_finds_nested_names() {
         let lib = TestLibrary::minimal();
         let tree = lib.scan();
-        let mock = MockCliamp::success();
-        let app = App::from_tree(tree.clone(), test_player(&mock));
+        let engine = RecordingEngine::new();
+        let app = App::from_tree(tree.clone(), Box::new(engine));
 
         let gamma_node = tree.children.iter().find(|n| n.name == "gamma").expect("gamma");
         assert!(app.subtree_matches_for_test(gamma_node, "deep"));
@@ -1065,8 +1008,8 @@ mod tests {
             ],
         );
 
-        let mock = MockCliamp::success();
-        let mut app = App::from_tree(tree, test_player(&mock));
+        let engine = RecordingEngine::new();
+        let mut app = App::from_tree(tree, Box::new(engine));
         app.set_expanded(alpha.clone(), true);
 
         let track_idx = app
@@ -1085,9 +1028,8 @@ mod tests {
     #[test]
     fn app_new_loads_configured_library() {
         let lib = TestLibrary::minimal();
-        let mock = MockCliamp::success();
         let config_path = lib._dir.path().join("config.yaml");
-        crate::testsupport::write_config(&config_path, &lib.root, mock.bin.to_str().unwrap());
+        crate::testsupport::write_config(&config_path, &lib.root);
 
         temp_env::with_vars(
             [

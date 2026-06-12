@@ -2,9 +2,11 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 use soundlib_rs::library::{scan_library, LibraryNode, NodeKind};
+use soundlib_rs::playback::PlaybackInfo;
+use soundlib_rs::player::PlaybackEngine;
 use tempfile::TempDir;
 
 pub fn extensions_mp3_flac() -> std::collections::HashSet<String> {
@@ -62,80 +64,88 @@ impl TestLibrary {
     }
 }
 
-pub struct MockCliamp {
-    pub _dir: TempDir,
-    pub bin: PathBuf,
-    pub log: PathBuf,
+/// A test double for `PlaybackEngine` that records the commands it receives and
+/// returns a caller-controlled snapshot.
+#[derive(Clone, Default)]
+pub struct RecordingEngine {
+    commands: Arc<Mutex<Vec<String>>>,
+    last_tracks: Arc<Mutex<Vec<PathBuf>>>,
+    snapshot: Arc<Mutex<Option<PlaybackInfo>>>,
 }
 
-impl MockCliamp {
-    pub fn success() -> Self {
-        let dir = TempDir::new().expect("tempdir");
-        let log = dir.path().join("cliamp.log");
-        let socket = dir.path().join("cliamp.sock");
-        let bin = dir.path().join("mock_cliamp.sh");
-        fs::write(
-            &bin,
-            format!(
-                r#"#!/bin/sh
-echo "$@" >> "{}"
-if echo "$@" | grep -q -- --daemon; then
-  touch "{}"
-fi
-if echo "$@" | grep -q -- "status --json"; then
-  printf '%s\n' '{{"ok":true,"state":"playing","track":{{"title":"Mock Track","artist":"Mock Artist","path":"/mock/track.mp3"}},"position":12,"duration":180,"total":1,"shuffle":false,"repeat":"off"}}'
-fi
-exit 0
-"#,
-                log.display(),
-                socket.display()
-            ),
-        )
-        .expect("write mock cliamp");
-        make_executable(&bin);
-        Self {
-            _dir: dir,
-            bin,
-            log,
-        }
+impl RecordingEngine {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn failing(message: &str) -> Self {
-        let dir = TempDir::new().expect("tempdir");
-        let log = dir.path().join("cliamp.log");
-        let bin = dir.path().join("mock_cliamp_fail.sh");
-        fs::write(
-            &bin,
-            format!(
-                "#!/bin/sh\necho \"$@\" >> \"{}\"\necho \"{message}\" >&2\nexit 1\n",
-                log.display()
-            ),
-        )
-        .expect("write failing mock cliamp");
-        make_executable(&bin);
-        Self {
-            _dir: dir,
-            bin,
-            log,
-        }
+    pub fn commands(&self) -> Vec<String> {
+        self.commands.lock().unwrap().clone()
     }
 
-    pub fn socket_path(&self) -> PathBuf {
-        self._dir.path().join("cliamp.sock")
+    pub fn last_tracks(&self) -> Vec<PathBuf> {
+        self.last_tracks.lock().unwrap().clone()
     }
 
-    pub fn log_lines(&self) -> Vec<String> {
-        fs::read_to_string(&self.log)
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_string)
-            .collect()
+    pub fn set_snapshot(&self, info: Option<PlaybackInfo>) {
+        *self.snapshot.lock().unwrap() = info;
+    }
+
+    fn record(&self, label: &str) {
+        self.commands.lock().unwrap().push(label.to_string());
     }
 }
 
-pub fn write_config(path: &Path, library_root: &Path, cliamp_bin: &str) {
+impl PlaybackEngine for RecordingEngine {
+    fn play_replace(&self, tracks: Vec<PathBuf>) {
+        *self.last_tracks.lock().unwrap() = tracks;
+        self.record("play_replace");
+    }
+
+    fn append(&self, tracks: Vec<PathBuf>) {
+        *self.last_tracks.lock().unwrap() = tracks;
+        self.record("append");
+    }
+
+    fn toggle(&self) {
+        self.record("toggle");
+    }
+
+    fn next(&self) {
+        self.record("next");
+    }
+
+    fn prev(&self) {
+        self.record("prev");
+    }
+
+    fn stop(&self) {
+        self.record("stop");
+    }
+
+    fn shuffle_toggle(&self) {
+        self.record("shuffle_toggle");
+    }
+
+    fn repeat_cycle(&self) {
+        self.record("repeat_cycle");
+    }
+
+    fn set_volume(&self, _volume: f32) {
+        self.record("set_volume");
+    }
+
+    fn snapshot(&self) -> Option<PlaybackInfo> {
+        self.snapshot.lock().unwrap().clone()
+    }
+
+    fn shutdown(&self) {
+        self.record("shutdown");
+    }
+}
+
+pub fn write_config(path: &Path, library_root: &Path) {
     let yaml = format!(
-        "library_root: {}\naudio_extensions:\n  - mp3\n  - flac\n  - ogg\n  - wav\ncliamp_bin: {cliamp_bin}\n",
+        "library_root: {}\naudio_extensions:\n  - mp3\n  - flac\n  - ogg\n  - wav\nvolume: 1.0\n",
         library_root.display()
     );
     if let Some(parent) = path.parent() {
@@ -144,9 +154,20 @@ pub fn write_config(path: &Path, library_root: &Path, cliamp_bin: &str) {
     fs::write(path, yaml).expect("write config");
 }
 
-fn make_executable(path: &Path) {
-    Command::new("chmod")
-        .args(["+x", path.to_str().expect("utf8 path")])
-        .status()
-        .expect("chmod mock cliamp");
+pub fn node(root: PathBuf, name: &str, children: Vec<LibraryNode>) -> LibraryNode {
+    LibraryNode {
+        name: name.into(),
+        path: root,
+        kind: NodeKind::Folder,
+        children,
+    }
+}
+
+pub fn file_node(parent: &Path, name: &str) -> LibraryNode {
+    LibraryNode {
+        name: name.into(),
+        path: parent.join(name),
+        kind: NodeKind::File,
+        children: Vec::new(),
+    }
 }

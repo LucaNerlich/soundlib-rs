@@ -1,11 +1,10 @@
 mod common;
 
 use std::collections::HashSet;
-use std::path::Path;
 
 use soundlib_rs::library::{collect_tracks, scan_library, NodeKind};
 
-use common::{extensions_mp3_flac, TestLibrary};
+use common::TestLibrary;
 
 #[test]
 fn scan_includes_only_audio_files() {
@@ -176,15 +175,4 @@ fn scan_root_node_is_folder_named_after_directory() {
     assert_eq!(tree.name, "library");
     assert_eq!(tree.path, lib.root);
     assert!(matches!(tree.kind, NodeKind::Folder));
-}
-
-#[test]
-fn scan_soundtracks_library_when_present() {
-    let root = Path::new("/home/luca/Nextcloud/_media/Soundtracks");
-    if !root.is_dir() {
-        return;
-    }
-
-    let tree = scan_library(root, &extensions_mp3_flac()).expect("scan soundtracks");
-    assert!(!tree.children.is_empty());
 }

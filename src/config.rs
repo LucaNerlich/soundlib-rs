@@ -5,26 +5,30 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_LIBRARY_ROOT: &str = "/home/luca/Nextcloud/_media/Soundtracks";
-const DEFAULT_CLIAMP_BIN: &str = "cliamp";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub library_root: PathBuf,
     pub audio_extensions: Vec<String>,
-    pub cliamp_bin: String,
-    #[serde(default = "default_cliamp_auto_daemon")]
-    pub cliamp_auto_daemon: bool,
+    #[serde(default = "default_volume")]
+    pub volume: f32,
 }
 
-fn default_cliamp_auto_daemon() -> bool {
-    true
+fn default_volume() -> f32 {
+    1.0
+}
+
+/// Cross-platform default library location: the OS "Music" directory when it
+/// can be resolved, otherwise the user's home directory.
+fn default_library_root() -> PathBuf {
+    dirs::audio_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            library_root: PathBuf::from(DEFAULT_LIBRARY_ROOT),
+            library_root: default_library_root(),
             audio_extensions: vec![
                 "mp3".into(),
                 "flac".into(),
@@ -33,8 +37,7 @@ impl Default for Config {
                 "wav".into(),
                 "m4a".into(),
             ],
-            cliamp_bin: DEFAULT_CLIAMP_BIN.into(),
-            cliamp_auto_daemon: true,
+            volume: 1.0,
         }
     }
 }
@@ -66,12 +69,6 @@ impl Config {
     pub(crate) fn apply_env_overrides(&mut self) {
         if let Ok(root) = env::var("SOUNDLIB_ROOT") {
             self.library_root = PathBuf::from(root);
-        }
-        if let Ok(bin) = env::var("SOUNDLIB_CLIAMP_BIN") {
-            self.cliamp_bin = bin;
-        }
-        if let Ok(value) = env::var("SOUNDLIB_CLIAMP_AUTO_DAEMON") {
-            self.cliamp_auto_daemon = matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes");
         }
     }
 
@@ -126,8 +123,8 @@ mod tests {
     #[test]
     fn default_config_values() {
         let config = Config::default();
-        assert_eq!(config.cliamp_bin, "cliamp");
         assert_eq!(config.audio_extensions.len(), 6);
+        assert_eq!(config.volume, 1.0);
     }
 
     #[test]
@@ -139,14 +136,13 @@ mod tests {
         let original = Config {
             library_root: dir.path().join("music"),
             audio_extensions: vec!["mp3".into()],
-            cliamp_bin: "custom-cliamp".into(),
-            cliamp_auto_daemon: false,
+            volume: 0.5,
         };
         write_config(&config_path, &original).expect("write");
 
         let loaded = Config::load_from_path(&config_path, false).expect("load");
         assert_eq!(loaded.library_root, original.library_root);
-        assert_eq!(loaded.cliamp_bin, "custom-cliamp");
+        assert_eq!(loaded.volume, 0.5);
         assert_eq!(loaded.audio_extensions, vec!["mp3"]);
     }
 

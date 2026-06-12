@@ -1,121 +1,119 @@
-mod common;
+use std::path::PathBuf;
 
-use soundlib_rs::player::Player;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use soundlib_rs::player::{PlayState, Playlist, Repeat};
 
-use common::{MockCliamp, TestLibrary};
+fn paths(names: &[&str]) -> Vec<PathBuf> {
+    names.iter().map(PathBuf::from).collect()
+}
 
-#[test]
-fn queue_track_invokes_cliamp_with_path() {
-    let mock = MockCliamp::success();
-    std::fs::write(&mock.socket_path(), b"").expect("socket");
-    let lib = TestLibrary::minimal();
-    let track = lib.root.join("loose.ogg");
-
-    let player = Player::with_socket_override(
-        mock.bin.to_string_lossy().to_string(),
-        false,
-        mock.socket_path(),
-    );
-    player.queue_track(&track).expect("queue track");
-
-    let lines = mock.log_lines();
-    assert_eq!(lines.len(), 1);
-    assert!(lines[0].contains("queue"));
-    assert!(lines[0].contains("loose.ogg"));
+fn seeded() -> StdRng {
+    StdRng::seed_from_u64(7)
 }
 
 #[test]
-fn queue_tracks_invokes_cliamp_for_each_path() {
-    let mock = MockCliamp::success();
-    std::fs::write(&mock.socket_path(), b"").expect("socket");
-    let lib = TestLibrary::minimal();
-    let tracks = [
-        lib.root.join("loose.ogg"),
-        lib.root.join("alpha/01-intro.mp3"),
-    ];
+fn set_tracks_positions_at_first_track() {
+    let mut rng = seeded();
+    let mut playlist = Playlist::new();
+    playlist.set_tracks(paths(&["a", "b", "c"]), &mut rng);
 
-    let player = Player::with_socket_override(
-        mock.bin.to_string_lossy().to_string(),
-        false,
-        mock.socket_path(),
-    );
-    let count = player.queue_tracks(&tracks).expect("queue tracks");
-
-    assert_eq!(count, 2);
-    assert_eq!(mock.log_lines().len(), 2);
+    assert_eq!(playlist.len(), 3);
+    assert_eq!(playlist.current().unwrap(), &PathBuf::from("a"));
+    assert_eq!(playlist.state, PlayState::Playing);
 }
 
 #[test]
-fn play_stop_and_transport_forward_arguments() {
-    let mock = MockCliamp::success();
-    std::fs::write(&mock.socket_path(), b"").expect("socket");
-    let player = Player::with_socket_override(
-        mock.bin.to_string_lossy().to_string(),
-        false,
-        mock.socket_path(),
-    );
+fn manual_next_prev_wrap_around() {
+    let mut rng = seeded();
+    let mut playlist = Playlist::new();
+    playlist.set_tracks(paths(&["a", "b", "c"]), &mut rng);
 
-    player.play().expect("play");
-    player.toggle().expect("toggle");
-    player.next().expect("next");
-    player.prev().expect("prev");
-    player.stop().expect("stop");
-    player.shuffle_toggle().expect("shuffle");
-    player.repeat_cycle().expect("repeat");
-
-    let lines = mock.log_lines();
-    assert_eq!(
-        lines,
-        vec![
-            "play",
-            "toggle",
-            "next",
-            "prev",
-            "stop",
-            "shuffle toggle",
-            "repeat cycle",
-        ]
-    );
+    assert_eq!(playlist.next().unwrap(), &PathBuf::from("b"));
+    assert_eq!(playlist.next().unwrap(), &PathBuf::from("c"));
+    assert_eq!(playlist.next().unwrap(), &PathBuf::from("a"));
+    assert_eq!(playlist.prev().unwrap(), &PathBuf::from("c"));
 }
 
 #[test]
-fn failed_cliamp_command_returns_stderr_message() {
-    let mock = MockCliamp::failing("daemon not running");
-    let player = Player::with_options(mock.bin.to_string_lossy().to_string(), false);
+fn repeat_off_stops_at_end() {
+    let mut rng = seeded();
+    let mut playlist = Playlist::new();
+    playlist.set_tracks(paths(&["a", "b"]), &mut rng);
 
-    let err = player.play().expect_err("play should fail");
-    assert!(err.to_string().contains("daemon not running"));
+    assert_eq!(playlist.advance_auto().unwrap(), &PathBuf::from("b"));
+    assert!(playlist.advance_auto().is_none());
+    assert_eq!(playlist.state, PlayState::Stopped);
 }
 
 #[test]
-fn queue_tracks_stops_on_first_failure() {
-    let mock = MockCliamp::failing("queue rejected");
-    let lib = TestLibrary::minimal();
-    let tracks = [
-        lib.root.join("loose.ogg"),
-        lib.root.join("alpha/01-intro.mp3"),
-    ];
+fn repeat_all_wraps_to_start() {
+    let mut rng = seeded();
+    let mut playlist = Playlist::new();
+    playlist.set_tracks(paths(&["a", "b"]), &mut rng);
+    playlist.repeat = Repeat::All;
 
-    let player = Player::with_options(mock.bin.to_string_lossy().to_string(), false);
-    let err = player.queue_tracks(&tracks).expect_err("should fail on first");
-    assert!(err.to_string().contains("queue rejected"));
-    assert_eq!(mock.log_lines().len(), 1);
+    assert_eq!(playlist.advance_auto().unwrap(), &PathBuf::from("b"));
+    assert_eq!(playlist.advance_auto().unwrap(), &PathBuf::from("a"));
+    assert_eq!(playlist.state, PlayState::Playing);
 }
 
 #[test]
-fn cliamp_queue_smoke_when_daemon_running() {
-    let track = std::path::Path::new(
-        "/home/luca/Nextcloud/_media/Soundtracks/Barotrauma - Soundtrack/02 - Monster Nearby.flac",
-    );
-    if !track.is_file() {
-        return;
-    }
+fn repeat_one_replays_current() {
+    let mut rng = seeded();
+    let mut playlist = Playlist::new();
+    playlist.set_tracks(paths(&["a", "b"]), &mut rng);
+    playlist.repeat = Repeat::One;
 
-    let player = Player::new("cliamp");
-    if player.stop().is_err() {
-        return;
-    }
+    assert_eq!(playlist.advance_auto().unwrap(), &PathBuf::from("a"));
+    assert_eq!(playlist.advance_auto().unwrap(), &PathBuf::from("a"));
+}
 
-    player.queue_track(track).expect("queue");
-    player.stop().expect("stop");
+#[test]
+fn repeat_cycle_order() {
+    let mut playlist = Playlist::new();
+    assert_eq!(playlist.repeat, Repeat::Off);
+    playlist.cycle_repeat();
+    assert_eq!(playlist.repeat, Repeat::All);
+    playlist.cycle_repeat();
+    assert_eq!(playlist.repeat, Repeat::One);
+    playlist.cycle_repeat();
+    assert_eq!(playlist.repeat, Repeat::Off);
+}
+
+#[test]
+fn shuffle_is_deterministic_for_a_seed_and_keeps_current() {
+    let mut rng = seeded();
+    let mut playlist = Playlist::new();
+    playlist.set_tracks(paths(&["a", "b", "c", "d", "e", "f"]), &mut rng);
+    playlist.next();
+    let current = playlist.current().cloned().unwrap();
+
+    playlist.toggle_shuffle(&mut rng);
+    assert!(playlist.shuffle);
+    assert_eq!(playlist.current().unwrap(), &current);
+
+    playlist.toggle_shuffle(&mut rng);
+    assert!(!playlist.shuffle);
+    assert_eq!(playlist.current().unwrap(), &current);
+}
+
+#[test]
+fn append_grows_the_queue() {
+    let mut rng = seeded();
+    let mut playlist = Playlist::new();
+    playlist.set_tracks(paths(&["a"]), &mut rng);
+    playlist.append(paths(&["b", "c"]));
+
+    assert_eq!(playlist.len(), 3);
+    assert_eq!(playlist.next().unwrap(), &PathBuf::from("b"));
+}
+
+#[test]
+fn stop_marks_state_stopped() {
+    let mut rng = seeded();
+    let mut playlist = Playlist::new();
+    playlist.set_tracks(paths(&["a"]), &mut rng);
+    playlist.stop();
+    assert_eq!(playlist.state, PlayState::Stopped);
 }
