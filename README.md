@@ -97,14 +97,27 @@ The test suite has **66 tests** across unit and integration targets:
 
 ## Installation
 
-Copy or symlink the release binary somewhere on your `PATH`:
+### From crates.io
+
+Install the published crate directly with Cargo:
+
+```bash
+cargo install soundlib-rs
+# binary ends up at ~/.cargo/bin/soundlib-rs
+```
+
+On Linux, install the ALSA dev headers first (see [Prerequisites](#prerequisites)).
+
+### From source
+
+Install from a local checkout:
 
 ```bash
 cargo install --path .
 # binary ends up at ~/.cargo/bin/soundlib-rs
 ```
 
-Or manually:
+Or copy the release binary somewhere on your `PATH` manually:
 
 ```bash
 cargo build --release
