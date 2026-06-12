@@ -7,7 +7,7 @@ description = "Terminal music library browser with embedded cross-OS audio engin
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/LucaNerlich/soundlib-rs"
-keywords = ["cliamp", "music", "tui", "audio", "terminal"]
+keywords = ["music", "tui", "audio", "terminal"]
 categories = ["command-line-utilities", "multimedia::audio"]
 
 [dependencies]
